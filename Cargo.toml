@@ -1,0 +1,15 @@
+[package]
+name = "sample"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+futures = "0.3"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+strip = true
