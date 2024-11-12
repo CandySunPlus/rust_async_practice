@@ -3,7 +3,7 @@ use std::{
     future::Future,
     marker::Send,
     pin::Pin,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
@@ -140,6 +140,15 @@ async fn async_main() {
         spawn(foo(n));
     }
 }
+
+enum JoinState<T> {
+    Unawaited,
+    Awaited(Waker),
+    Ready(T),
+    Done,
+}
+
+struct JoinHandle<T>(Arc<Mutex<JoinState<T>>>);
 
 fn main() {
     println!("Hello, world!");
