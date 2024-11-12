@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     future::Future,
     marker::Send,
+    mem,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -128,17 +129,36 @@ type DynFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 static NEW_TASKS: Mutex<Vec<DynFuture>> = Mutex::new(Vec::new());
 
-fn spawn<F>(future: F)
+fn spawn<F, T>(future: F) -> JoinHandle<T>
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
 {
-    NEW_TASKS.lock().unwrap().push(Box::pin(future));
+    let join_state = Arc::new(Mutex::new(JoinState::Unawaited));
+    let join_handle = JoinHandle(join_state.clone());
+    let task = Box::pin(wrap_with_join_state(future, join_state));
+    NEW_TASKS.lock().unwrap().push(task);
+    join_handle
 }
 
 async fn async_main() {
+    let mut task_handles = Vec::new();
     for n in 1..=10 {
-        spawn(foo(n));
+        task_handles.push(spawn(foo(n)));
     }
+
+    for handle in task_handles {
+        handle.await;
+    }
+}
+
+async fn wrap_with_join_state<F: Future>(future: F, join_state: Arc<Mutex<JoinState<F::Output>>>) {
+    let value = future.await;
+    let mut guard = join_state.lock().unwrap();
+    if let JoinState::Awaited(waker) = &*guard {
+        waker.wake_by_ref();
+    }
+    *guard = JoinState::Ready(value)
 }
 
 enum JoinState<T> {
@@ -150,15 +170,37 @@ enum JoinState<T> {
 
 struct JoinHandle<T>(Arc<Mutex<JoinState<T>>>);
 
+impl<T> Future for JoinHandle<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.0.lock().unwrap();
+        match mem::replace(&mut *guard, JoinState::Done) {
+            JoinState::Unawaited | JoinState::Awaited(_) => {
+                *guard = JoinState::Awaited(cx.waker().clone());
+                Poll::Pending
+            }
+            JoinState::Ready(value) => Poll::Ready(value),
+            JoinState::Done => unreachable!("poll called after completion"),
+        }
+    }
+}
+
 fn main() {
     println!("Hello, world!");
 
     let waker = futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
-    let mut tasks: Vec<DynFuture> = vec![Box::pin(async_main())];
+    let mut main_task = Box::pin(async_main());
+    let mut other_tasks = Vec::new();
     loop {
+        if main_task.as_mut().poll(&mut cx).is_ready() {
+            return;
+        }
+
         let is_pendding = |task: &mut DynFuture| task.as_mut().poll(&mut cx).is_pending();
-        tasks.retain_mut(is_pendding);
+
+        other_tasks.retain_mut(is_pendding);
 
         loop {
             let Some(mut task) = NEW_TASKS.lock().unwrap().pop() else {
@@ -167,11 +209,11 @@ fn main() {
 
             // Polling this task could spawn more tasks, so it's important that NEW_TASKS is not locked here.
             if task.as_mut().poll(&mut cx).is_pending() {
-                tasks.push(task);
+                other_tasks.push(task);
             }
         }
 
-        if tasks.is_empty() {
+        if other_tasks.is_empty() {
             break;
         }
     }
