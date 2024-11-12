@@ -1,10 +1,10 @@
 use std::{
     collections::BTreeMap,
     future::Future,
+    marker::Send,
     pin::Pin,
     sync::Mutex,
     task::{Context, Poll, Waker},
-    thread::{self, sleep},
     time::{Duration, Instant},
 };
 
@@ -38,6 +38,7 @@ impl Future for Foo {
     }
 }
 
+#[allow(dead_code)]
 fn join_all<F: Future>(futures: Vec<F>) -> JoinAll<F> {
     JoinAll {
         futures: futures.into_iter().map(Box::pin).collect(),
@@ -112,6 +113,7 @@ impl<F: Future> Future for Timeout<F> {
     }
 }
 
+#[allow(dead_code)]
 fn timeout<F>(duration: Duration, inner: F) -> Timeout<F>
 where
     F: Future,
@@ -122,27 +124,46 @@ where
     }
 }
 
-#[tokio::main]
-async fn main() {
-    println!("Hello, world!");
-    let mut futures = vec![];
-    for i in 0..10 {
-        futures.push(foo(i));
+type DynFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+static NEW_TASKS: Mutex<Vec<DynFuture>> = Mutex::new(Vec::new());
+
+fn spawn<F>(future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    NEW_TASKS.lock().unwrap().push(Box::pin(future));
+}
+
+async fn async_main() {
+    for n in 1..=10 {
+        spawn(foo(n));
     }
-    let mut joined_future = Box::pin(join_all(futures));
+}
+
+fn main() {
+    println!("Hello, world!");
+
     let waker = futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
-    while joined_future.as_mut().poll(&mut cx).is_pending() {
-        // Busy loop
-        let mut wake_times = WAKE_TIMES.lock().unwrap();
-        let next_wake = wake_times.keys().next().expect("sleep forever?");
-        thread::sleep(next_wake.saturating_duration_since(Instant::now()));
-        while let Some(entry) = wake_times.first_entry() {
-            if *entry.key() <= Instant::now() {
-                entry.remove().into_iter().for_each(Waker::wake);
-            } else {
+    let mut tasks: Vec<DynFuture> = vec![Box::pin(async_main())];
+    loop {
+        let is_pendding = |task: &mut DynFuture| task.as_mut().poll(&mut cx).is_pending();
+        tasks.retain_mut(is_pendding);
+
+        loop {
+            let Some(mut task) = NEW_TASKS.lock().unwrap().pop() else {
                 break;
+            };
+
+            // Polling this task could spawn more tasks, so it's important that NEW_TASKS is not locked here.
+            if task.as_mut().poll(&mut cx).is_pending() {
+                tasks.push(task);
             }
+        }
+
+        if tasks.is_empty() {
+            break;
         }
     }
 }
