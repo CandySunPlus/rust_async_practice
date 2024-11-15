@@ -129,6 +129,19 @@ type DynFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 static NEW_TASKS: Mutex<Vec<DynFuture>> = Mutex::new(Vec::new());
 
+/// Spawns a new asynchronous task and returns a `JoinHandle` that can be used to
+/// wait for the completion of the task.
+///
+/// # Parameters
+/// - `future`: The asynchronous task to spawn.
+///
+/// # Returns
+/// - `JoinHandle<T>`: A `JoinHandle` that can be used to wait for the completion of the spawned task.
+///
+/// # Requirements
+/// - `F` must implement `Future` with an output type of `T`.
+/// - `F` must be `Send` and have a `'static` lifetime.
+/// - `T` must be `Send` and have a `'static` lifetime.
 fn spawn<F, T>(future: F) -> JoinHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
@@ -152,6 +165,18 @@ async fn async_main() {
     }
 }
 
+/// Wraps a future with a join state and waits for its completion.
+///
+/// This function takes a future `future` and an `Arc<Mutex<JoinState<F::Output>>>`
+/// representing the join state. It awaits the completion of the future, updates
+/// the join state accordingly, and returns the value produced by the future.
+///
+/// # Parameters
+/// - `future`: The future to be wrapped with a join state.
+/// - `join_state`: The `Arc<Mutex<JoinState<F::Output>>>` representing the join state.
+///
+/// # Returns
+/// - The value produced by the future after it has been awaited and completed.
 async fn wrap_with_join_state<F: Future>(future: F, join_state: Arc<Mutex<JoinState<F::Output>>>) {
     let value = future.await;
     let mut guard = join_state.lock().unwrap();
