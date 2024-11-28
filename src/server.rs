@@ -20,7 +20,8 @@ async fn server_main(mut listener: TcpListener) -> io::Result<()> {
     let mut n = 1;
     loop {
         let (socket, _) = accept(&mut listener).await?;
-        spawn(async move { one_response(socket, n).await.unwrap() });
+        spawn(one_response(socket, n));
+        // spawn(async move { one_response(socket, n).await.unwrap() });
         n += 1;
     }
 }
