@@ -5,7 +5,7 @@ use std::{
     mem,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll, Wake, Waker},
     time::{Duration, Instant},
 };
 
@@ -211,10 +211,28 @@ impl<T> Future for JoinHandle<T> {
     }
 }
 
+struct AwaitFlag(Mutex<bool>);
+
+impl AwaitFlag {
+    fn check_and_clear(&self) -> bool {
+        let mut guard = self.0.lock().unwrap();
+        let check = *guard;
+        *guard = false;
+        check
+    }
+}
+
+impl Wake for AwaitFlag {
+    fn wake(self: Arc<Self>) {
+        *self.0.lock().unwrap() = true;
+    }
+}
+
 fn main() {
     println!("Hello, world!");
 
-    let waker = futures::task::noop_waker();
+    let awake_flag = Arc::new(AwaitFlag(Mutex::new(false)));
+    let waker = Waker::from(awake_flag.clone());
     let mut cx = Context::from_waker(&waker);
     let mut main_task = Box::pin(async_main());
     let mut other_tasks = Vec::new();
@@ -236,6 +254,10 @@ fn main() {
             if task.as_mut().poll(&mut cx).is_pending() {
                 other_tasks.push(task);
             }
+        }
+
+        if awake_flag.check_and_clear() {
+            continue;
         }
 
         if other_tasks.is_empty() {
