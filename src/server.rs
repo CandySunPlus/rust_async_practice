@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{sleep, spawn};
+use crate::{register_pollfd, sleep, spawn};
 
 async fn one_response(mut socket: TcpStream, n: u64) -> io::Result<()> {
     let start_msg = format!("start {n}\n");
@@ -56,7 +56,7 @@ async fn print_all(stream: &mut TcpStream) -> io::Result<()> {
             Ok(0) => return Poll::Ready(Ok(())),
             Ok(n) => io::stdout().write_all(&buf[..n])?,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                context.waker().wake_by_ref();
+                register_pollfd(context, stream, libc::POLLIN);
                 return Poll::Pending;
             }
             Err(e) => return Poll::Ready(Err(e)),
@@ -72,7 +72,7 @@ async fn accept(listener: &mut TcpListener) -> io::Result<(TcpStream, SocketAddr
             Poll::Ready(Ok((stream, addr)))
         }
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-            context.waker().wake_by_ref();
+            register_pollfd(context, listener, libc::POLLIN);
             Poll::Pending
         }
         Err(e) => Poll::Ready(Err(e)),
@@ -90,7 +90,7 @@ async fn write_all(mut buf: &[u8], stream: &mut TcpStream) -> io::Result<()> {
                 }
                 Ok(n) => buf = &buf[n..],
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    context.waker().wake_by_ref();
+                    register_pollfd(context, stream, libc::POLLOUT);
                     return Poll::Pending;
                 }
                 Err(e) => return Poll::Ready(Err(e)),
